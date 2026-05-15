@@ -1,0 +1,15 @@
+# Build outputs
+bin/
+obj/
+
+# User-specific
+*.user
+.vs/
+
+# Test results
+TestResults/
+*.trx
+*.xml
+
+# Local secrets — never commit the base URL with credentials
+appsettings.local.json

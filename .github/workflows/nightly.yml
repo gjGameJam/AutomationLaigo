@@ -1,0 +1,58 @@
+name: LAIGO Nightly API Tests
+
+on:
+  schedule:
+    # 2 AM Eastern = 6 AM UTC (adjusted for EST/EDT automatically)
+    - cron: '0 6 * * *'
+  workflow_dispatch:
+    inputs:
+      base_url:
+        description: 'Override LAIGO base URL (leave blank to use secret)'
+        required: false
+        type: string
+
+jobs:
+  api-tests:
+    name: API Test Suite
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    env:
+      LAIGO_BASE_URL: ${{ inputs.base_url || secrets.LAIGO_BASE_URL }}
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Restore dependencies
+        run: dotnet restore testingLAIGO.sln
+
+      - name: Build
+        run: dotnet build testingLAIGO.sln --no-restore --configuration Release
+
+      - name: Run API tests
+        run: >
+          dotnet test testingLAIGO.sln
+          --no-build
+          --configuration Release
+          --verbosity normal
+          --logger "trx;LogFilePath=nightly-results.trx"
+          --results-directory ./TestResults
+
+      - name: Upload test results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-results-${{ github.run_id }}
+          path: '**/TestResults/*.trx'
+          retention-days: 30
+
+      - name: Notify on failure
+        if: failure()
+        run: |
+          echo "::error::LAIGO nightly tests FAILED. Check the uploaded test results artifact."
