@@ -21,6 +21,7 @@ public abstract class LaigOTestBase
         {
             BaseURL = TestConfig.BaseUrl,
             Timeout = TestConfig.DefaultTimeoutMs,
+            IgnoreHTTPSErrors = true,
         });
         Client = new LaigOApiClient(_context, TestConfig.BaseUrl);
     }

@@ -1,6 +1,6 @@
 using Microsoft.Playwright;
 
-namespace LaigO.Tests.Fixtures;
+namespace LaigO.Tests;
 
 /// <summary>
 /// Assembly-level setup: creates one IPlaywright instance shared across all test classes.

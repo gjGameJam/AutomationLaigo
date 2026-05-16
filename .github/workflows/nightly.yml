@@ -30,14 +30,14 @@ jobs:
           dotnet-version: '8.0.x'
 
       - name: Restore dependencies
-        run: dotnet restore testingLAIGO.sln
+        run: dotnet restore AutomationLaigo.sln
 
       - name: Build
-        run: dotnet build testingLAIGO.sln --no-restore --configuration Release
+        run: dotnet build AutomationLaigo.sln --no-restore --configuration Release
 
       - name: Run API tests
         run: >
-          dotnet test testingLAIGO.sln
+          dotnet test AutomationLaigo.sln
           --no-build
           --configuration Release
           --verbosity normal
