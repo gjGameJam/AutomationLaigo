@@ -33,12 +33,23 @@ public class DebugTests : LaigOTestBase
     }
 
     [Test]
-    public async Task BrickOwlElement_KnownId_ReturnsNon500()
+    public async Task BrickOwlElement_KnownId_ApiKeyConfigured()
     {
         var response = await Client.GetBrickOwlElementAsync(KnownLegoElementId);
 
-        // BrickOwl may return 503 when the API key is not yet configured — that's acceptable
-        response.Status.Should().NotBe(500, "unhandled server errors must never leak");
+        // 200 = pricing found; 404 = element not in BrickOwl catalog
+        // 503 means BRICKOWL_API_KEY is missing from the server environment — fail loudly
+        response.Status.Should().BeOneOf(new[] { 200, 404 },
+            "503 = BRICKOWL_API_KEY not configured on the server; 500 = unhandled server error");
+    }
+
+    [Test]
+    public async Task BrickOwlElements_BatchLookup_ApiKeyConfigured()
+    {
+        var response = await Client.PostBrickOwlElementsAsync([KnownLegoElementId]);
+
+        response.Status.Should().BeOneOf(new[] { 200, 404 },
+            "503 = BRICKOWL_API_KEY not configured on the server; 500 = unhandled server error");
     }
 
     [Test]
