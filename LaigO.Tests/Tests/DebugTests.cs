@@ -12,24 +12,27 @@ namespace LaigO.Tests.Tests;
 [Category("Debug")]
 public class DebugTests : LaigOTestBase
 {
-    // 1x1 round plate — a common LEGO element present in most palettes
-    private const string KnownLegoElementId = "4073";
+    // 1x1 plate — universally stocked by both LEGO and BrickOwl sellers
+    private const string KnownLegoElementId = "3024";
 
     [Test]
-    public async Task LegoElement_KnownId_ReturnsNon500()
+    public async Task LegoElement_KnownId_Returns200()
     {
         var response = await Client.GetLegoElementAsync(KnownLegoElementId);
 
-        // 200 = in stock, 404 = not available — both are acceptable structured responses
-        response.Status.Should().NotBe(500, "unhandled server errors must never leak");
+        // 3024 (1x1 plate) is one of the most fundamental LEGO elements — 404 means the
+        // LEGO availability API is misconfigured or the element mapping is broken
+        response.Status.Should().Be(200,
+            "element 3024 must be found; 404 = LEGO API misconfigured or element unavailable; 503 = API key missing");
     }
 
     [Test]
-    public async Task LegoElements_BatchLookup_ReturnsNon500()
+    public async Task LegoElements_BatchLookup_Returns200()
     {
         var response = await Client.PostLegoElementsAsync([KnownLegoElementId]);
 
-        response.Status.Should().NotBe(500, "unhandled server errors must never leak");
+        response.Status.Should().Be(200,
+            "element 3024 must be found; 404 = LEGO API misconfigured or element unavailable; 503 = API key missing");
     }
 
     [Test]
@@ -37,10 +40,9 @@ public class DebugTests : LaigOTestBase
     {
         var response = await Client.GetBrickOwlElementAsync(KnownLegoElementId);
 
-        // 200 = pricing found; 404 = element not in BrickOwl catalog
-        // 503 means BRICKOWL_API_KEY is missing from the server environment — fail loudly
-        response.Status.Should().BeOneOf(new[] { 200, 404 },
-            "503 = BRICKOWL_API_KEY not configured on the server; 500 = unhandled server error");
+        // 3024 is universally listed in BrickOwl — 404 means the lookup is broken, not that the element is absent
+        response.Status.Should().Be(200,
+            "element 3024 must be found; 404 = BrickOwl API misconfigured; 503 = BRICKOWL_API_KEY not set on server");
     }
 
     [Test]
@@ -48,8 +50,8 @@ public class DebugTests : LaigOTestBase
     {
         var response = await Client.PostBrickOwlElementsAsync([KnownLegoElementId]);
 
-        response.Status.Should().BeOneOf(new[] { 200, 404 },
-            "503 = BRICKOWL_API_KEY not configured on the server; 500 = unhandled server error");
+        response.Status.Should().Be(200,
+            "element 3024 must be found; 404 = BrickOwl API misconfigured; 503 = BRICKOWL_API_KEY not set on server");
     }
 
     [Test]
