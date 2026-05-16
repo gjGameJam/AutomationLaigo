@@ -1,5 +1,6 @@
 using FluentAssertions;
 using LaigO.Tests.Fixtures;
+using System.IO.Compression;
 using System.Net.Http.Headers;
 using System.Text.RegularExpressions;
 
@@ -163,9 +164,12 @@ public class GenerateTests : LaigOTestBase
 
         finished.CreatedAt.Should().NotBeNull("completed job must have created_at");
         finished.QueuedAt.Should().NotBeNull("completed job must have queued_at");
+        finished.StartedAt.Should().NotBeNull("completed job must have started_at");
         finished.FinishedAt.Should().NotBeNull("completed job must have finished_at");
-        finished.FinishedAt!.Value.Should().BeGreaterThan(finished.CreatedAt!.Value,
-            "finished_at must be a later Unix timestamp than created_at");
+        finished.StartedAt!.Value.Should().BeGreaterThan(finished.CreatedAt!.Value,
+            "started_at must be after created_at");
+        finished.FinishedAt!.Value.Should().BeGreaterThan(finished.StartedAt.Value,
+            "finished_at must be after started_at");
     }
 
     // ── Download ──────────────────────────────────────────────────────────────
@@ -336,5 +340,111 @@ public class GenerateTests : LaigOTestBase
         finished.Status.Should().Be("failed",
             "zero block width produces a 0-pixel mosaic which the pipeline cannot process");
         finished.Error.Should().NotBeNullOrWhiteSpace();
+    }
+
+    [Test]
+    public async Task Generate_BlockWidth1_CompletesSuccessfully()
+    {
+        var submitted = await Client.GenerateAsync(TestImagePath, blockWidth: 1, mosaicType: "2d");
+        var finished = await Client.WaitForJobAsync(submitted.JobId);
+
+        finished.Status.Should().Be("complete",
+            $"blockWidth=1 is the minimum valid size and must complete. Error: {finished.Error}");
+        finished.Progress.Should().BeApproximately(100, 0.1);
+    }
+
+    // ── Parameter boundary discovery ──────────────────────────────────────────
+
+    [Test]
+    public async Task Generate_NegativeBlockWidth_Returns422OrJobFails()
+    {
+        // -1 is a valid int at the form layer; unknown whether Pydantic validates ge=1.
+        // This test reveals whether validation happens at the API or worker level.
+        var (status, job) = await Client.TryGenerateAsync(TestImagePath, blockWidth: -1, mosaicType: "2d");
+
+        if (status == 422)
+            return; // API-level validation — correct behavior
+
+        status.Should().Be(200, "if not validated at the API layer, server must queue the job");
+        var finished = await Client.WaitForJobAsync(job!.JobId);
+        finished.Status.Should().Be("failed",
+            "blockWidth=-1 must not produce a valid mosaic");
+        finished.Error.Should().NotBeNullOrWhiteSpace();
+    }
+
+    [Test]
+    public async Task Generate_BgPctAbove100_Returns422OrJobFails()
+    {
+        // bgPct=150 is a valid float at the form layer; unknown whether Pydantic validates le=100.
+        var (status, job) = await Client.TryGenerateAsync(TestImagePath, blockWidth: 2, bgPct: 150);
+
+        if (status == 422)
+            return; // API-level validation — correct behavior
+
+        status.Should().Be(200, "if not validated at the API layer, server must queue the job");
+        var finished = await Client.WaitForJobAsync(job!.JobId);
+        finished.Status.Should().Be("failed",
+            "bgPct=150 exceeds the valid range (0–100) and must not produce a mosaic");
+        finished.Error.Should().NotBeNullOrWhiteSpace();
+    }
+
+    [Test]
+    public async Task Generate_BgPctBelow0_Returns422OrJobFails()
+    {
+        var (status, job) = await Client.TryGenerateAsync(TestImagePath, blockWidth: 2, bgPct: -10);
+
+        if (status == 422)
+            return;
+
+        status.Should().Be(200, "if not validated at the API layer, server must queue the job");
+        var finished = await Client.WaitForJobAsync(job!.JobId);
+        finished.Status.Should().Be("failed",
+            "bgPct=-10 is below the valid range (0–100) and must not produce a mosaic");
+        finished.Error.Should().NotBeNullOrWhiteSpace();
+    }
+
+    // ── Parameter combinations ────────────────────────────────────────────────
+
+    [Test]
+    public async Task Generate_3dWithToFrame_CompletesSuccessfully()
+    {
+        // Frames and mosaic dimensions are independent; both pipelines must support to_frame=true.
+        var submitted = await Client.GenerateAsync(TestImagePath, blockWidth: 2, mosaicType: "3d", toFrame: true);
+        var finished = await Client.WaitForJobAsync(submitted.JobId);
+
+        finished.Status.Should().Be("complete",
+            $"3d+to_frame job {submitted.JobId} should complete. Error: {finished.Error}");
+        finished.Progress.Should().BeApproximately(100, 0.1);
+    }
+
+    // ── Artifact structure ────────────────────────────────────────────────────
+
+    [Test]
+    public async Task Generate_CompletedJob_ArtifactContainsExpectedFiles()
+    {
+        var submitted = await Client.GenerateAsync(TestImagePath, blockWidth: 2, mosaicType: "2d");
+        var finished = await Client.WaitForJobAsync(submitted.JobId);
+
+        finished.Status.Should().Be("complete",
+            $"job {submitted.JobId} must complete before artifact structure can be validated. Error: {finished.Error}");
+
+        var bytes = await Client.DownloadArtifactAsync(submitted.JobId);
+        using var stream = new MemoryStream(bytes);
+        using var zip = new ZipArchive(stream, ZipArchiveMode.Read);
+
+        var entries = zip.Entries.Select(e => e.FullName).ToList();
+        var allEntries = string.Join(", ", entries);
+
+        // Manifest at root level (not inside a subdirectory)
+        entries.Should().Contain(e => !e.Contains('/') && e.EndsWith(".json"),
+            $"ZIP must contain a top-level manifest JSON. Found: {allEntries}");
+
+        // Instructions folder with at least one PDF
+        entries.Should().Contain(e => e.Contains('/') && e.EndsWith(".pdf"),
+            $"ZIP must contain a PDF inside the instructions folder. Found: {allEntries}");
+
+        // Order list folder with at least one JSON
+        entries.Should().Contain(e => e.Contains('/') && e.EndsWith(".json"),
+            $"ZIP must contain a JSON inside the order list folder. Found: {allEntries}");
     }
 }

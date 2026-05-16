@@ -82,7 +82,14 @@ public class LaigOApiClient(IAPIRequestContext context, string baseUrl)
 
         var imageBytes = await File.ReadAllBytesAsync(imagePath);
         var fileContent = new ByteArrayContent(imageBytes);
-        fileContent.Headers.ContentType = MediaTypeHeaderValue.Parse("image/jpeg");
+        var contentType = Path.GetExtension(imagePath).ToLowerInvariant() switch
+        {
+            ".png" => "image/png",
+            ".gif" => "image/gif",
+            ".webp" => "image/webp",
+            _ => "image/jpeg",
+        };
+        fileContent.Headers.ContentType = MediaTypeHeaderValue.Parse(contentType);
         multipart.Add(fileContent, "file", Path.GetFileName(imagePath));
         multipart.Add(new StringContent(blockWidth.ToString()), "mosaic_block_width");
         multipart.Add(new StringContent(mosaicType), "mosaic_type");
@@ -111,6 +118,23 @@ public class LaigOApiClient(IAPIRequestContext context, string baseUrl)
                 $"POST /generate returned {status}: {body}");
         return JsonSerializer.Deserialize<GenerateResponse>(body, _json)
             ?? throw new InvalidOperationException($"Failed to deserialize GenerateResponse: {body}");
+    }
+
+    /// <summary>
+    /// Like <see cref="GenerateAsync"/> but never throws — returns the HTTP status and the
+    /// parsed response (null on non-200). Use in discovery tests where the server may return
+    /// 422 (validation) or 200 + a job that later fails.
+    /// </summary>
+    public async Task<(int Status, GenerateResponse? Job)> TryGenerateAsync(
+        string imagePath,
+        int blockWidth = 2,
+        string mosaicType = "2d",
+        double bgPct = 100,
+        bool toFrame = false)
+    {
+        var (status, body) = await GenerateRawAsync(imagePath, blockWidth, mosaicType, bgPct, toFrame);
+        if (status != 200) return (status, null);
+        return (status, JsonSerializer.Deserialize<GenerateResponse>(body, _json));
     }
 
     // ── Job status ────────────────────────────────────────────────────────────
