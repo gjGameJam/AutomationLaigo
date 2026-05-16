@@ -11,8 +11,12 @@ namespace LaigO.Tests.ApiClient;
 /// </summary>
 public class LaigOApiClient(IAPIRequestContext context, string baseUrl)
 {
+    // SnakeCaseLower maps constructor parameter names (e.g. JobId → job_id) so records
+    // deserialize correctly without relying solely on [property: JsonPropertyName] targets,
+    // which only annotate synthesized properties and are not seen by constructor-param matching.
     private static readonly JsonSerializerOptions _json = new()
     {
+        PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower,
         PropertyNameCaseInsensitive = true,
     };
 
@@ -21,6 +25,9 @@ public class LaigOApiClient(IAPIRequestContext context, string baseUrl)
     private static async Task<T> ParseAsync<T>(IAPIResponse response)
     {
         var body = await response.TextAsync();
+        if (!response.Ok)
+            throw new InvalidOperationException(
+                $"Request failed with status {response.Status}: {body}");
         return JsonSerializer.Deserialize<T>(body, _json)
             ?? throw new InvalidOperationException(
                 $"Failed to deserialize {typeof(T).Name} from: {body}");

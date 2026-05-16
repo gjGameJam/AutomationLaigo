@@ -16,7 +16,7 @@ public class CheckoutTests : LaigOTestBase
     [Test]
     public async Task Quote_InvalidJobId_Returns404()
     {
-        var request = new QuoteRequest("US", "10001", "test@example.com");
+        var request = new QuoteRequest { ShippingCountry = "US", ShippingZip = "10001", CustomerEmail = "test@example.com" };
         var response = await Client.GetQuoteRawAsync("00000000-0000-0000-0000-000000000000", request);
 
         response.Status.Should().Be(404);
@@ -31,8 +31,8 @@ public class CheckoutTests : LaigOTestBase
         Assume.That(finished.Status, Is.EqualTo("complete"),
             "Skipping checkout test: generate job failed");
 
-        var request = new QuoteRequest("US", "10001", "test@example.com");
-        var response = await Client.GetQuoteRawAsync(finished.JobId, request);
+        var request = new QuoteRequest { ShippingCountry = "US", ShippingZip = "10001", CustomerEmail = "test@example.com" };
+        var response = await Client.GetQuoteRawAsync(submitted.JobId, request);
 
         // 200 = sourced; 422 = pieces unsourceable; 503 = sourcing APIs unavailable
         response.Status.Should().NotBe(500,
@@ -40,7 +40,7 @@ public class CheckoutTests : LaigOTestBase
 
         if (response.Status == 200)
         {
-            var quote = await Client.GetQuoteAsync(finished.JobId, request);
+            var quote = await Client.GetQuoteAsync(submitted.JobId, request);
             quote.CheckoutId.Should().NotBeNullOrWhiteSpace();
             quote.PiecesTotal.Should().BeGreaterThan(0);
             quote.ExpiresAt.Should().BeGreaterThan(DateTimeOffset.UtcNow.ToUnixTimeSeconds());

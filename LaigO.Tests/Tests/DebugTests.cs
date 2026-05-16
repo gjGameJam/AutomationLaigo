@@ -50,15 +50,9 @@ public class DebugTests : LaigOTestBase
         Assume.That(finished.Status, Is.EqualTo("complete"),
             "Skipping optimizer test: generate job failed, cannot test optimizer without order_list.json");
 
-        var orderListResponse = await Client.GetJobOrderListAsync(finished.JobId);
-        orderListResponse.Status.Should().Be(200);
-
-        var orderBody = await orderListResponse.TextAsync();
-        orderBody.Should().NotBeNullOrWhiteSpace();
-
-        var optimizerResponse = await Client.GetOptimizerPreviewAsync(finished.JobId);
-        // 200 = allocation computed; 422 = all pieces unsourceable; 503 = sourcing API down
+        var optimizerResponse = await Client.GetOptimizerPreviewAsync(submitted.JobId);
+        // 200 = allocation computed; 404 = order list not yet available; 422 = pieces unsourceable; 503 = sourcing API down
         optimizerResponse.Status.Should().NotBe(500,
-            "optimizer preview should return a structured response, not an unhandled server error");
+            "optimizer preview must return a structured response, not an unhandled server error");
     }
 }

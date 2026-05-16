@@ -128,7 +128,7 @@ public class GenerateTests : LaigOTestBase
 
         var status = await Client.GetJobAsync(submitted.JobId);
 
-        status.JobId.Should().Be(submitted.JobId);
+        // job_id is not returned in GET /jobs/{id} responses — use submitted.JobId from POST /generate
         status.Status.Should().BeOneOf("queued", "running", "complete", "failed");
         status.Progress.Should().BeInRange(0, 100);
 
