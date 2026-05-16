@@ -196,7 +196,7 @@ public class LaigOApiClient(IAPIRequestContext context, string baseUrl)
     public Task<IAPIResponse> PostBrickOwlElementsAsync(IEnumerable<string> elementIds) =>
         context.PostAsync("/checkout-debug/brickowl/elements", new APIRequestContextOptions
         {
-            DataObject = elementIds.ToList(),
+            DataObject = new { element_ids = elementIds.ToList(), shipping_country = "US", shipping_zip = "90210" },
         });
 
     public Task<IAPIResponse> GetLegoElementAsync(string elementId) =>
@@ -205,12 +205,15 @@ public class LaigOApiClient(IAPIRequestContext context, string baseUrl)
     public Task<IAPIResponse> PostLegoElementsAsync(IEnumerable<string> elementIds) =>
         context.PostAsync("/checkout-debug/lego/elements", new APIRequestContextOptions
         {
-            DataObject = elementIds.ToList(),
+            DataObject = new { element_ids = elementIds.ToList() },
         });
 
     public Task<IAPIResponse> GetJobOrderListAsync(string jobId) =>
         context.GetAsync($"/checkout-debug/job/{jobId}/order-list");
 
     public Task<IAPIResponse> GetOptimizerPreviewAsync(string jobId) =>
-        context.PostAsync($"/checkout-debug/job/{jobId}/optimize");
+        context.PostAsync($"/checkout-debug/job/{jobId}/optimize", new APIRequestContextOptions
+        {
+            DataObject = new { shipping_country = "US", shipping_zip = "90210" },
+        });
 }
