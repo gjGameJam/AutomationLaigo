@@ -13,3 +13,7 @@ TestResults/
 
 # Local secrets — never commit the base URL with credentials
 appsettings.local.json
+.env
+
+# Pipeline report cache (downloaded TRX artifacts, auto-generated)
+scripts/.pipeline_cache/
