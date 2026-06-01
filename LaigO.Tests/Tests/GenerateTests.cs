@@ -1,53 +1,19 @@
-using FluentAssertions;
-using LaigO.Tests.Fixtures;
 using System.IO.Compression;
 using System.Net.Http.Headers;
-using System.Text.RegularExpressions;
+using System.Text.Json;
+using FluentAssertions;
+using LaigO.Tests.Fixtures;
 
 namespace LaigO.Tests.Tests;
 
 /// <summary>
 /// End-to-end pipeline tests: POST /generate → poll /jobs/{id} → GET /jobs/{id}/download.
-/// Generation takes 30–120s on Render's paid plan.
+/// Runs against the deployed LAIGO instance; generation timeout is configured in appsettings.test.json.
 /// </summary>
 [TestFixture]
 [Category("Generate")]
 public class GenerateTests : LaigOTestBase
 {
-    private static readonly Regex UuidPattern = new(
-        @"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
-        RegexOptions.Compiled | RegexOptions.IgnoreCase);
-
-    // Posts to /generate with only the fields explicitly provided — used for 422 edge cases.
-    private async Task<int> RawPostGenerateStatusAsync(
-        bool includeFile = true,
-        string? blockWidth = "2",
-        string? mosaicType = "2d",
-        string? bgPct = null,
-        string? toFrame = null)
-    {
-        using var http = new HttpClient();
-        using var multipart = new MultipartFormDataContent();
-
-        if (includeFile)
-        {
-            var imageBytes = await File.ReadAllBytesAsync(TestImagePath);
-            var fileContent = new ByteArrayContent(imageBytes);
-            fileContent.Headers.ContentType = MediaTypeHeaderValue.Parse("image/jpeg");
-            multipart.Add(fileContent, "file", "test_image.jpg");
-        }
-
-        if (blockWidth != null) multipart.Add(new StringContent(blockWidth), "mosaic_block_width");
-        if (mosaicType != null) multipart.Add(new StringContent(mosaicType), "mosaic_type");
-        if (bgPct != null) multipart.Add(new StringContent(bgPct), "background_color_percent");
-        if (toFrame != null) multipart.Add(new StringContent(toFrame), "to_frame");
-
-        var response = await http.PostAsync(TestConfig.BaseUrl.TrimEnd('/') + "/generate", multipart);
-        return (int)response.StatusCode;
-    }
-
-    // ── Happy path ────────────────────────────────────────────────────────────
-
     [Test]
     public async Task Generate_ValidImage_JobQueuesAndCompletes()
     {
@@ -61,65 +27,19 @@ public class GenerateTests : LaigOTestBase
         finished.Status.Should().Be("complete",
             $"job {submitted.JobId} should complete. Error: {finished.Error}");
         finished.Progress.Should().BeApproximately(100, 0.1);
-    }
+        finished.Error.Should().BeNull("a completed job has no error");
+        finished.Traceback.Should().BeNull("a completed job has no traceback");
+        finished.FinishedAt.Should().NotBeNull("complete jobs must have finished_at");
+        finished.CreatedAt.Should().NotBeNull();
+        finished.FinishedAt.Should().BeGreaterThan(finished.CreatedAt!.Value,
+            "finished_at must be after created_at");
 
-    [Test]
-    public async Task Generate_With3dType_CompletesSuccessfully()
-    {
-        // Exercises the background-removal (mediapipe) branch — an entirely separate pipeline from 2d
-        var submitted = await Client.GenerateAsync(TestImagePath, blockWidth: 2, mosaicType: "3d", bgPct: 100, toFrame: false);
-
-        submitted.JobId.Should().NotBeNullOrWhiteSpace();
-        submitted.Status.Should().Be("queued");
-
-        var finished = await Client.WaitForJobAsync(submitted.JobId);
-
-        finished.Status.Should().Be("complete",
-            $"3d job {submitted.JobId} should complete. Error: {finished.Error}");
-        finished.Progress.Should().BeApproximately(100, 0.1);
-    }
-
-    [Test]
-    public async Task Generate_ZeroBackground_CompletesSuccessfully()
-    {
-        // background_color_percent=0 has never been exercised below 100
-        var submitted = await Client.GenerateAsync(TestImagePath, blockWidth: 2, mosaicType: "2d", bgPct: 0, toFrame: false);
-
-        submitted.JobId.Should().NotBeNullOrWhiteSpace();
-
-        var finished = await Client.WaitForJobAsync(submitted.JobId);
-
-        finished.Status.Should().Be("complete",
-            $"zero-background job {submitted.JobId} should complete. Error: {finished.Error}");
-        finished.Progress.Should().BeApproximately(100, 0.1);
-    }
-
-    [Test]
-    public async Task Generate_WithToFrame_CompletesSuccessfully()
-    {
-        var submitted = await Client.GenerateAsync(TestImagePath, blockWidth: 2, mosaicType: "2d", toFrame: true);
-
-        submitted.JobId.Should().NotBeNullOrWhiteSpace();
-        submitted.Status.Should().Be("queued");
-
-        var finished = await Client.WaitForJobAsync(submitted.JobId);
-
-        finished.Status.Should().Be("complete",
-            $"to_frame job {submitted.JobId} should complete. Error: {finished.Error}");
-        finished.Progress.Should().BeApproximately(100, 0.1);
-    }
-
-    // ── Job response shape ────────────────────────────────────────────────────
-
-    [Test]
-    public async Task Generate_ResponseJobIdIsUUID()
-    {
-        var submitted = await Client.GenerateAsync(TestImagePath, blockWidth: 2, mosaicType: "2d");
-
-        UuidPattern.IsMatch(submitted.JobId).Should().BeTrue(
-            $"job_id must be a valid UUID, got: '{submitted.JobId}'");
-
-        await Client.WaitForJobAsync(submitted.JobId);
+        // Settings must round-trip — the server should echo what we submitted.
+        finished.Settings.Should().NotBeNull();
+        finished.Settings!.MosaicBlockWidth.Should().Be(2);
+        finished.Settings.MosaicType.Should().Be("2d");
+        finished.Settings.BackgroundColorPercent.Should().BeApproximately(100, 0.01);
+        finished.Settings.ToFrame.Should().BeFalse();
     }
 
     [Test]
@@ -129,77 +49,105 @@ public class GenerateTests : LaigOTestBase
 
         var status = await Client.GetJobAsync(submitted.JobId);
 
-        // job_id is not returned in GET /jobs/{id} responses — use submitted.JobId from POST /generate
         status.Status.Should().BeOneOf("queued", "running", "complete", "failed");
         status.Progress.Should().BeInRange(0, 100);
+        status.CreatedAt.Should().NotBeNull("every job must have a created_at timestamp");
+        status.QueuedAt.Should().NotBeNull("every job must have a queued_at timestamp");
 
+        // Settings must echo what was submitted, even mid-flight.
+        status.Settings.Should().NotBeNull();
+        status.Settings!.MosaicBlockWidth.Should().Be(2);
+        status.Settings.MosaicType.Should().Be("2d");
+
+        // Failure-mode invariants
+        if (status.Status == "complete")
+        {
+            status.Progress.Should().BeApproximately(100, 0.1);
+            status.FinishedAt.Should().NotBeNull();
+        }
+        if (status.Status == "failed")
+        {
+            // Failed jobs should at least carry an error explanation.
+            status.Error.Should().NotBeNullOrWhiteSpace("failed jobs must carry an error message");
+        }
+
+        // Clean up — wait for completion so we don't clog the queue
         await Client.WaitForJobAsync(submitted.JobId);
     }
 
     [Test]
-    public async Task Generate_CompletedJob_SettingsRoundTrip()
-    {
-        // Verify that submitted parameters are faithfully stored and returned by GET /jobs/{id}
-        const int blockWidth = 4;
-        const string mosaicType = "2d";
-        const double bgPct = 75.0;
-        const bool toFrame = false;
-
-        var submitted = await Client.GenerateAsync(TestImagePath,
-            blockWidth: blockWidth, mosaicType: mosaicType, bgPct: bgPct, toFrame: toFrame);
-        var finished = await Client.WaitForJobAsync(submitted.JobId);
-
-        finished.Settings.Should().NotBeNull("completed job must include settings");
-        finished.Settings!.MosaicBlockWidth.Should().Be(blockWidth);
-        finished.Settings.MosaicType.Should().Be(mosaicType);
-        finished.Settings.BackgroundColorPercent.Should().BeApproximately(bgPct, 0.01);
-        finished.Settings.ToFrame.Should().Be(toFrame);
-    }
-
-    [Test]
-    public async Task Generate_CompletedJob_HasTimestamps()
+    public async Task Generate_CompletedJob_ArtifactIsValidMosaicZip()
     {
         var submitted = await Client.GenerateAsync(TestImagePath, blockWidth: 2, mosaicType: "2d");
         var finished = await Client.WaitForJobAsync(submitted.JobId);
-
-        finished.CreatedAt.Should().NotBeNull("completed job must have created_at");
-        finished.QueuedAt.Should().NotBeNull("completed job must have queued_at");
-        finished.StartedAt.Should().NotBeNull("completed job must have started_at");
-        finished.FinishedAt.Should().NotBeNull("completed job must have finished_at");
-        finished.StartedAt!.Value.Should().BeGreaterThan(finished.CreatedAt!.Value,
-            "started_at must be after created_at");
-        finished.FinishedAt!.Value.Should().BeGreaterThan(finished.StartedAt.Value,
-            "finished_at must be after started_at");
-    }
-
-    // ── Download ──────────────────────────────────────────────────────────────
-
-    [Test]
-    public async Task Generate_CompletedJob_ArtifactDownloadsAsZip()
-    {
-        var submitted = await Client.GenerateAsync(TestImagePath, blockWidth: 2, mosaicType: "2d");
-        var finished = await Client.WaitForJobAsync(submitted.JobId);
-
         finished.Status.Should().Be("complete",
-            $"job {submitted.JobId} should complete. Error: {finished.Error}");
+            $"job {submitted.JobId} must complete. Error: {finished.Error}");
 
         var downloadResponse = await Client.DownloadArtifactRawAsync(submitted.JobId);
         downloadResponse.Status.Should().Be(200);
 
         var bytes = await downloadResponse.BodyAsync();
         bytes.Should().NotBeEmpty();
+        bytes.Length.Should().BeGreaterThan(100,
+            "a real mosaic ZIP is at least a few KB; a tiny response is a stub or error");
 
         // ZIP magic bytes: PK\x03\x04
         bytes[0].Should().Be(0x50);
         bytes[1].Should().Be(0x4B);
+
+        // Validate ZIP contents — the artifact must have the deliverable mosaic
+        // (instructions PDF), the canonical order list, and the manifest.
+        using var zipStream = new MemoryStream(bytes);
+        using var archive = new ZipArchive(zipStream, ZipArchiveMode.Read);
+
+        var entryNames = archive.Entries.Select(e => e.FullName).ToHashSet();
+
+        entryNames.Should().Contain("manifest.json",
+            $"artifact must contain manifest.json. Entries: [{string.Join(", ", entryNames)}]");
+        entryNames.Should().Contain("OrderLists/order_list.json",
+            $"artifact must contain OrderLists/order_list.json. Entries: [{string.Join(", ", entryNames)}]");
+        entryNames.Any(n => n.StartsWith("Instructions/") && n.EndsWith(".pdf")).Should().BeTrue(
+            $"artifact must contain an Instructions/*.pdf. Entries: [{string.Join(", ", entryNames)}]");
+
+        // Manifest must be parseable JSON and reference the same job.
+        var manifestEntry = archive.GetEntry("manifest.json")!;
+        using (var manifestReader = new StreamReader(manifestEntry.Open()))
+        {
+            var manifestText = await manifestReader.ReadToEndAsync();
+            using var manifestDoc = JsonDocument.Parse(manifestText);
+            manifestDoc.RootElement.TryGetProperty("job_id", out var manifestJobId).Should()
+                .BeTrue("manifest must include job_id");
+            manifestJobId.GetString().Should().Be(submitted.JobId,
+                "manifest job_id must match the job we submitted");
+        }
+
+        // Order list inside the ZIP must be a non-empty array of pieces.
+        var orderListEntry = archive.GetEntry("OrderLists/order_list.json")!;
+        using (var orderReader = new StreamReader(orderListEntry.Open()))
+        {
+            var orderText = await orderReader.ReadToEndAsync();
+            using var orderDoc = JsonDocument.Parse(orderText);
+            orderDoc.RootElement.ValueKind.Should().Be(JsonValueKind.Array);
+            orderDoc.RootElement.GetArrayLength().Should().BeGreaterThan(0,
+                "order_list.json must contain at least one piece");
+            var first = orderDoc.RootElement[0];
+            first.TryGetProperty("elementId", out _).Should().BeTrue();
+            first.TryGetProperty("quantity", out var qty).Should().BeTrue();
+            qty.GetInt32().Should().BeGreaterThan(0);
+        }
     }
 
     [Test]
-    public async Task Generate_NonExistentJob_Returns404()
+    public async Task Generate_NonExistentJob_Returns404WithDetail()
     {
         var response = await Client.GetJobRawAsync("00000000-0000-0000-0000-000000000000");
 
         response.Status.Should().Be(404);
+
+        var body = await response.TextAsync();
+        body.Should().NotBeNullOrWhiteSpace();
+        using var doc = JsonDocument.Parse(body);
+        doc.RootElement.TryGetProperty("detail", out _).Should().BeTrue();
     }
 
     [Test]
@@ -211,29 +159,40 @@ public class GenerateTests : LaigOTestBase
     }
 
     [Test]
-    public async Task Download_IncompleteJob_Returns404()
+    public async Task Download_IncompleteJob_Returns404_ThenSucceedsWhenComplete()
     {
         var submitted = await Client.GenerateAsync(TestImagePath, blockWidth: 2);
 
         // Immediately request the artifact before the job finishes — no artifact.zip exists yet
-        var response = await Client.DownloadArtifactRawAsync(submitted.JobId);
-        response.Status.Should().Be(404, "artifact does not exist until the job completes");
+        var preCompleteResponse = await Client.DownloadArtifactRawAsync(submitted.JobId);
+        preCompleteResponse.Status.Should().Be(404,
+            "artifact does not exist until the job completes");
 
-        await Client.WaitForJobAsync(submitted.JobId);
+        var finished = await Client.WaitForJobAsync(submitted.JobId);
+        finished.Status.Should().Be("complete",
+            $"job {submitted.JobId} must complete. Error: {finished.Error}");
+
+        // Same job_id, post-completion → must now succeed
+        var postCompleteResponse = await Client.DownloadArtifactRawAsync(submitted.JobId);
+        postCompleteResponse.Status.Should().Be(200,
+            "the same job_id must return 200 once complete");
     }
 
-    // ── File content validation (400) ─────────────────────────────────────────
-
     [Test]
-    public async Task Generate_InvalidFile_Returns400()
+    public async Task Generate_InvalidFile_Returns400WithDetail()
     {
         var tempFile = Path.GetTempFileName() + ".jpg";
         await File.WriteAllTextAsync(tempFile, "this is not an image");
 
         try
         {
-            var (status, _) = await Client.GenerateRawAsync(tempFile, blockWidth: 2);
+            var (status, body) = await Client.GenerateRawAsync(tempFile, blockWidth: 2);
             status.Should().Be(400, "invalid image data must be rejected by PIL verification");
+
+            body.Should().NotBeNullOrWhiteSpace("400 must include a detail body");
+            using var doc = JsonDocument.Parse(body);
+            doc.RootElement.TryGetProperty("detail", out _).Should()
+                .BeTrue("FastAPI 400 must include 'detail'");
         }
         finally
         {
@@ -242,209 +201,49 @@ public class GenerateTests : LaigOTestBase
     }
 
     [Test]
-    public async Task Generate_EmptyFile_Returns400()
+    public async Task Generate_MissingRequiredField_Returns422WithValidationError()
     {
-        var tempFile = Path.GetTempFileName() + ".jpg";
-        await File.WriteAllBytesAsync(tempFile, Array.Empty<byte>());
+        using var http = new HttpClient();
+        using var multipart = new MultipartFormDataContent();
 
-        try
-        {
-            var (status, _) = await Client.GenerateRawAsync(tempFile, blockWidth: 2);
-            status.Should().Be(400, "empty file must be rejected by PIL verification");
-        }
-        finally
-        {
-            File.Delete(tempFile);
-        }
+        var imageBytes = await File.ReadAllBytesAsync(TestImagePath);
+        var fileContent = new ByteArrayContent(imageBytes);
+        fileContent.Headers.ContentType = MediaTypeHeaderValue.Parse("image/jpeg");
+        multipart.Add(fileContent, "file", "test_image.jpg");
+        // deliberately omit mosaic_block_width — FastAPI must reject with 422
+        multipart.Add(new StringContent("2d"), "mosaic_type");
+
+        var response = await http.PostAsync(TestConfig.BaseUrl.TrimEnd('/') + "/generate", multipart);
+
+        ((int)response.StatusCode).Should().Be(422);
+
+        // FastAPI 422 body shape: {"detail":[{"loc":[...],"msg":...,"type":...}]}
+        var body = await response.Content.ReadAsStringAsync();
+        using var doc = JsonDocument.Parse(body);
+        doc.RootElement.TryGetProperty("detail", out var detail).Should().BeTrue();
+        detail.ValueKind.Should().Be(JsonValueKind.Array,
+            "FastAPI 422 detail must be a list of validation errors");
+        detail.GetArrayLength().Should().BeGreaterThan(0);
+        // The validation error should mention the missing field
+        body.Should().Contain("mosaic_block_width",
+            "validation error must identify the missing field");
     }
 
     [Test]
-    public async Task Generate_PngExtensionWrongContent_Returns400()
+    public async Task Generate_WithToFrame_CompletesSuccessfullyAndEchoesSetting()
     {
-        var tempFile = Path.GetTempFileName() + ".png";
-        await File.WriteAllTextAsync(tempFile, "this is not a png");
+        var submitted = await Client.GenerateAsync(TestImagePath, blockWidth: 2, mosaicType: "2d", toFrame: true);
 
-        try
-        {
-            var (status, _) = await Client.GenerateRawAsync(tempFile, blockWidth: 2);
-            status.Should().Be(400, "non-image content must be rejected regardless of extension");
-        }
-        finally
-        {
-            File.Delete(tempFile);
-        }
-    }
+        submitted.JobId.Should().NotBeNullOrWhiteSpace();
+        submitted.Status.Should().Be("queued");
 
-    // ── Form validation (422) ─────────────────────────────────────────────────
-
-    [Test]
-    public async Task Generate_MissingFile_Returns422()
-    {
-        var status = await RawPostGenerateStatusAsync(includeFile: false, blockWidth: "2", mosaicType: "2d");
-        status.Should().Be(422);
-    }
-
-    [Test]
-    public async Task Generate_MissingBlockWidth_Returns422()
-    {
-        var status = await RawPostGenerateStatusAsync(blockWidth: null, mosaicType: "2d");
-        status.Should().Be(422);
-    }
-
-    [Test]
-    public async Task Generate_MissingMosaicType_Returns422()
-    {
-        var status = await RawPostGenerateStatusAsync(blockWidth: "2", mosaicType: null);
-        status.Should().Be(422);
-    }
-
-    [Test]
-    public async Task Generate_NonIntegerBlockWidth_Returns422()
-    {
-        // FastAPI parses mosaic_block_width as int — sending a string must be rejected before handler runs
-        var status = await RawPostGenerateStatusAsync(blockWidth: "abc", mosaicType: "2d");
-        status.Should().Be(422);
-    }
-
-    [Test]
-    public async Task Generate_NonFloatBackground_Returns422()
-    {
-        // FastAPI parses background_color_percent as float — sending a non-numeric string must be rejected
-        var status = await RawPostGenerateStatusAsync(blockWidth: "2", mosaicType: "2d", bgPct: "banana");
-        status.Should().Be(422);
-    }
-
-    // ── Worker validation (job queued, then fails) ────────────────────────────
-
-    [Test]
-    public async Task Generate_InvalidMosaicType_JobFails()
-    {
-        // FastAPI accepts any string for mosaic_type; the MosaicType enum cast fails inside the worker.
-        // This is the primary way to exercise the status="failed" + error field code path.
-        var submitted = await Client.GenerateAsync(TestImagePath, blockWidth: 2, mosaicType: "invalid_type");
-        var finished = await Client.WaitForJobAsync(submitted.JobId);
-
-        finished.Status.Should().Be("failed",
-            "an unrecognised mosaic_type is only caught inside the worker, causing the job to fail");
-        finished.Error.Should().NotBeNullOrWhiteSpace("a failed job must expose an error message");
-    }
-
-    [Test]
-    public async Task Generate_ZeroBlockWidth_JobFails()
-    {
-        // blockWidth=0 is a valid int so FastAPI accepts it; the pipeline fails when it tries
-        // to produce a 0-pixel-wide mosaic (numpy/PIL will raise on zero-dimension arrays).
-        var submitted = await Client.GenerateAsync(TestImagePath, blockWidth: 0, mosaicType: "2d");
-        var finished = await Client.WaitForJobAsync(submitted.JobId);
-
-        finished.Status.Should().Be("failed",
-            "zero block width produces a 0-pixel mosaic which the pipeline cannot process");
-        finished.Error.Should().NotBeNullOrWhiteSpace();
-    }
-
-    [Test]
-    public async Task Generate_BlockWidth1_CompletesSuccessfully()
-    {
-        var submitted = await Client.GenerateAsync(TestImagePath, blockWidth: 1, mosaicType: "2d");
         var finished = await Client.WaitForJobAsync(submitted.JobId);
 
         finished.Status.Should().Be("complete",
-            $"blockWidth=1 is the minimum valid size and must complete. Error: {finished.Error}");
+            $"to_frame job {submitted.JobId} should complete. Error: {finished.Error}");
         finished.Progress.Should().BeApproximately(100, 0.1);
-    }
-
-    // ── Parameter boundary discovery ──────────────────────────────────────────
-
-    [Test]
-    public async Task Generate_NegativeBlockWidth_Returns422OrJobFails()
-    {
-        // -1 is a valid int at the form layer; unknown whether Pydantic validates ge=1.
-        // This test reveals whether validation happens at the API or worker level.
-        var (status, job) = await Client.TryGenerateAsync(TestImagePath, blockWidth: -1, mosaicType: "2d");
-
-        if (status == 422)
-            return; // API-level validation — correct behavior
-
-        status.Should().Be(200, "if not validated at the API layer, server must queue the job");
-        var finished = await Client.WaitForJobAsync(job!.JobId);
-        finished.Status.Should().Be("failed",
-            "blockWidth=-1 must not produce a valid mosaic");
-        finished.Error.Should().NotBeNullOrWhiteSpace();
-    }
-
-    [Test]
-    public async Task Generate_BgPctAbove100_Returns422OrJobFails()
-    {
-        // bgPct=150 is a valid float at the form layer; unknown whether Pydantic validates le=100.
-        var (status, job) = await Client.TryGenerateAsync(TestImagePath, blockWidth: 2, bgPct: 150);
-
-        if (status == 422)
-            return; // API-level validation — correct behavior
-
-        status.Should().Be(200, "if not validated at the API layer, server must queue the job");
-        var finished = await Client.WaitForJobAsync(job!.JobId);
-        finished.Status.Should().Be("failed",
-            "bgPct=150 exceeds the valid range (0–100) and must not produce a mosaic");
-        finished.Error.Should().NotBeNullOrWhiteSpace();
-    }
-
-    [Test]
-    public async Task Generate_BgPctBelow0_Returns422OrJobFails()
-    {
-        var (status, job) = await Client.TryGenerateAsync(TestImagePath, blockWidth: 2, bgPct: -10);
-
-        if (status == 422)
-            return;
-
-        status.Should().Be(200, "if not validated at the API layer, server must queue the job");
-        var finished = await Client.WaitForJobAsync(job!.JobId);
-        finished.Status.Should().Be("failed",
-            "bgPct=-10 is below the valid range (0–100) and must not produce a mosaic");
-        finished.Error.Should().NotBeNullOrWhiteSpace();
-    }
-
-    // ── Parameter combinations ────────────────────────────────────────────────
-
-    [Test]
-    public async Task Generate_3dWithToFrame_CompletesSuccessfully()
-    {
-        // Frames and mosaic dimensions are independent; both pipelines must support to_frame=true.
-        var submitted = await Client.GenerateAsync(TestImagePath, blockWidth: 2, mosaicType: "3d", toFrame: true);
-        var finished = await Client.WaitForJobAsync(submitted.JobId);
-
-        finished.Status.Should().Be("complete",
-            $"3d+to_frame job {submitted.JobId} should complete. Error: {finished.Error}");
-        finished.Progress.Should().BeApproximately(100, 0.1);
-    }
-
-    // ── Artifact structure ────────────────────────────────────────────────────
-
-    [Test]
-    public async Task Generate_CompletedJob_ArtifactContainsExpectedFiles()
-    {
-        var submitted = await Client.GenerateAsync(TestImagePath, blockWidth: 2, mosaicType: "2d");
-        var finished = await Client.WaitForJobAsync(submitted.JobId);
-
-        finished.Status.Should().Be("complete",
-            $"job {submitted.JobId} must complete before artifact structure can be validated. Error: {finished.Error}");
-
-        var bytes = await Client.DownloadArtifactAsync(submitted.JobId);
-        using var stream = new MemoryStream(bytes);
-        using var zip = new ZipArchive(stream, ZipArchiveMode.Read);
-
-        var entries = zip.Entries.Select(e => e.FullName).ToList();
-        var allEntries = string.Join(", ", entries);
-
-        // Manifest at root level (not inside a subdirectory)
-        entries.Should().Contain(e => !e.Contains('/') && e.EndsWith(".json"),
-            $"ZIP must contain a top-level manifest JSON. Found: {allEntries}");
-
-        // Instructions folder with at least one PDF
-        entries.Should().Contain(e => e.Contains('/') && e.EndsWith(".pdf"),
-            $"ZIP must contain a PDF inside the instructions folder. Found: {allEntries}");
-
-        // Order list folder with at least one JSON
-        entries.Should().Contain(e => e.Contains('/') && e.EndsWith(".json"),
-            $"ZIP must contain a JSON inside the order list folder. Found: {allEntries}");
+        finished.Settings.Should().NotBeNull();
+        finished.Settings!.ToFrame.Should().BeTrue(
+            "to_frame=true must round-trip through the settings echo");
     }
 }

@@ -11,23 +11,24 @@ namespace LaigO.Tests.ApiClient;
 /// </summary>
 public class LaigOApiClient(IAPIRequestContext context, string baseUrl)
 {
-    // SnakeCaseLower maps constructor parameter names (e.g. JobId → job_id) so records
-    // deserialize correctly without relying solely on [property: JsonPropertyName] targets,
-    // which only annotate synthesized properties and are not seen by constructor-param matching.
     private static readonly JsonSerializerOptions _json = new()
     {
-        PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower,
         PropertyNameCaseInsensitive = true,
     };
+
+    public static JsonSerializerOptions JsonOptions => _json;
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
     private static async Task<T> ParseAsync<T>(IAPIResponse response)
     {
         var body = await response.TextAsync();
+        // Surface the HTTP status before deserializing — otherwise a 4xx/5xx with
+        // a FastAPI {"detail": ...} body throws a confusing JsonException for the
+        // missing target field instead of "Expected 200, got 500".
         if (!response.Ok)
             throw new InvalidOperationException(
-                $"Request failed with status {response.Status}: {body}");
+                $"{typeof(T).Name} request failed with status {response.Status}: {body}");
         return JsonSerializer.Deserialize<T>(body, _json)
             ?? throw new InvalidOperationException(
                 $"Failed to deserialize {typeof(T).Name} from: {body}");
@@ -82,14 +83,7 @@ public class LaigOApiClient(IAPIRequestContext context, string baseUrl)
 
         var imageBytes = await File.ReadAllBytesAsync(imagePath);
         var fileContent = new ByteArrayContent(imageBytes);
-        var contentType = Path.GetExtension(imagePath).ToLowerInvariant() switch
-        {
-            ".png" => "image/png",
-            ".gif" => "image/gif",
-            ".webp" => "image/webp",
-            _ => "image/jpeg",
-        };
-        fileContent.Headers.ContentType = MediaTypeHeaderValue.Parse(contentType);
+        fileContent.Headers.ContentType = MediaTypeHeaderValue.Parse("image/jpeg");
         multipart.Add(fileContent, "file", Path.GetFileName(imagePath));
         multipart.Add(new StringContent(blockWidth.ToString()), "mosaic_block_width");
         multipart.Add(new StringContent(mosaicType), "mosaic_type");
@@ -118,23 +112,6 @@ public class LaigOApiClient(IAPIRequestContext context, string baseUrl)
                 $"POST /generate returned {status}: {body}");
         return JsonSerializer.Deserialize<GenerateResponse>(body, _json)
             ?? throw new InvalidOperationException($"Failed to deserialize GenerateResponse: {body}");
-    }
-
-    /// <summary>
-    /// Like <see cref="GenerateAsync"/> but never throws — returns the HTTP status and the
-    /// parsed response (null on non-200). Use in discovery tests where the server may return
-    /// 422 (validation) or 200 + a job that later fails.
-    /// </summary>
-    public async Task<(int Status, GenerateResponse? Job)> TryGenerateAsync(
-        string imagePath,
-        int blockWidth = 2,
-        string mosaicType = "2d",
-        double bgPct = 100,
-        bool toFrame = false)
-    {
-        var (status, body) = await GenerateRawAsync(imagePath, blockWidth, mosaicType, bgPct, toFrame);
-        if (status != 200) return (status, null);
-        return (status, JsonSerializer.Deserialize<GenerateResponse>(body, _json));
     }
 
     // ── Job status ────────────────────────────────────────────────────────────
@@ -217,11 +194,24 @@ public class LaigOApiClient(IAPIRequestContext context, string baseUrl)
     public Task<IAPIResponse> GetBrickOwlElementAsync(string elementId) =>
         context.GetAsync($"/checkout-debug/brickowl/element/{elementId}");
 
-    public Task<IAPIResponse> PostBrickOwlElementsAsync(IEnumerable<string> elementIds) =>
+    public Task<IAPIResponse> PostBrickOwlElementsAsync(
+        IEnumerable<string> elementIds,
+        string shippingCountry = "US",
+        string shippingZip = "90210") =>
         context.PostAsync("/checkout-debug/brickowl/elements", new APIRequestContextOptions
         {
-            DataObject = new { element_ids = elementIds.ToList(), shipping_country = "US", shipping_zip = "90210" },
+            DataObject = new
+            {
+                element_ids = elementIds.ToList(),
+                shipping_country = shippingCountry,
+                shipping_zip = shippingZip,
+            },
         });
+
+    public Task<IAPIResponse> GetBrickOwlElementRawAsync(
+        string elementId,
+        string idType = "item_no") =>
+        context.GetAsync($"/checkout-debug/brickowl/element/{elementId}/raw?id_type={idType}");
 
     public Task<IAPIResponse> GetLegoElementAsync(string elementId) =>
         context.GetAsync($"/checkout-debug/lego/element/{elementId}");
@@ -229,15 +219,37 @@ public class LaigOApiClient(IAPIRequestContext context, string baseUrl)
     public Task<IAPIResponse> PostLegoElementsAsync(IEnumerable<string> elementIds) =>
         context.PostAsync("/checkout-debug/lego/elements", new APIRequestContextOptions
         {
+            // Backend is Pydantic LegoAvailabilityBatchRequest{element_ids: list[str]},
+            // not a bare array. Sending [..] directly produces 422 model_attributes_type.
             DataObject = new { element_ids = elementIds.ToList() },
         });
 
     public Task<IAPIResponse> GetJobOrderListAsync(string jobId) =>
         context.GetAsync($"/checkout-debug/job/{jobId}/order-list");
 
-    public Task<IAPIResponse> GetOptimizerPreviewAsync(string jobId) =>
+    public Task<IAPIResponse> GetOptimizerPreviewAsync(
+        string jobId,
+        string shippingCountry = "US",
+        string shippingZip = "90210") =>
         context.PostAsync($"/checkout-debug/job/{jobId}/optimize", new APIRequestContextOptions
         {
-            DataObject = new { shipping_country = "US", shipping_zip = "90210" },
+            // OptimizePreviewRequest fields have defaults server-side, but the body
+            // is a required parameter — POSTing with no body yields 422 "Field
+            // required", which silently passed the old BeOneOf(200,422,502,503).
+            DataObject = new { shipping_country = shippingCountry, shipping_zip = shippingZip },
         });
+
+    public Task<IAPIResponse> GetLegoElementListingAsync(string elementId) =>
+        context.GetAsync($"/checkout-debug/lego/element/{elementId}/listing");
+
+    // ── Checkout gate ─────────────────────────────────────────────────────────
+
+    public Task<IAPIResponse> GetCheckoutGateRawAsync() =>
+        context.GetAsync("/checkout/gate");
+
+    public async Task<CheckoutGateResponse> GetCheckoutGateAsync()
+    {
+        var r = await GetCheckoutGateRawAsync();
+        return await ParseAsync<CheckoutGateResponse>(r);
+    }
 }
