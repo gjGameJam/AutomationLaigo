@@ -18,6 +18,13 @@ public class LaigOApiClient(IAPIRequestContext context, string baseUrl)
 
     public static JsonSerializerOptions JsonOptions => _json;
 
+    // One shared HttpClient for all multipart uploads. Creating a new
+    // HttpClient per request (the old pattern) leaks sockets in TIME_WAIT under
+    // load — the canonical .NET footgun. Multipart goes through HttpClient
+    // rather than IAPIRequestContext because Playwright's API request context
+    // does not build multipart/form-data bodies.
+    private static readonly HttpClient _http = new();
+
     // ── Helpers ───────────────────────────────────────────────────────────────
 
     private static async Task<T> ParseAsync<T>(IAPIResponse response)
@@ -69,28 +76,50 @@ public class LaigOApiClient(IAPIRequestContext context, string baseUrl)
 
     /// <summary>
     /// Returns the raw HTTP status code and response body.
-    /// Use this to assert on error responses (400, 413, etc.).
+    /// Use this to assert on error responses (400, 422, etc.).
+    /// Accepts string-typed values so callers can submit deliberately invalid
+    /// inputs (e.g. mosaic_block_width="0", mosaic_type="cube") to exercise the
+    /// backend's validation 422s.
     /// </summary>
-    public async Task<(int Status, string Body)> GenerateRawAsync(
+    public Task<(int Status, string Body)> GenerateRawAsync(
         string imagePath,
         int blockWidth = 2,
         string mosaicType = "2d",
         double bgPct = 100,
         bool toFrame = false)
     {
-        using var http = new HttpClient { BaseAddress = new Uri(baseUrl.TrimEnd('/') + "/") };
+        var fields = new Dictionary<string, string>
+        {
+            ["mosaic_block_width"] = blockWidth.ToString(),
+            ["mosaic_type"] = mosaicType,
+            ["background_color_percent"] = bgPct.ToString("F2"),
+            ["to_frame"] = toFrame ? "true" : "false",
+        };
+        return GenerateMultipartRawAsync(imagePath, fields);
+    }
+
+    /// <summary>
+    /// Low-level multipart POST to /generate with caller-supplied form fields.
+    /// Omitting a key lets tests exercise the missing-required-field 422 without
+    /// duplicating the HttpClient/multipart plumbing in the test body. Pass
+    /// <paramref name="fieldOverrides"/> with raw string values to send invalid
+    /// shapes.
+    /// </summary>
+    public async Task<(int Status, string Body)> GenerateMultipartRawAsync(
+        string imagePath,
+        IDictionary<string, string> formFields)
+    {
         using var multipart = new MultipartFormDataContent();
 
         var imageBytes = await File.ReadAllBytesAsync(imagePath);
         var fileContent = new ByteArrayContent(imageBytes);
         fileContent.Headers.ContentType = MediaTypeHeaderValue.Parse("image/jpeg");
         multipart.Add(fileContent, "file", Path.GetFileName(imagePath));
-        multipart.Add(new StringContent(blockWidth.ToString()), "mosaic_block_width");
-        multipart.Add(new StringContent(mosaicType), "mosaic_type");
-        multipart.Add(new StringContent(bgPct.ToString("F2")), "background_color_percent");
-        multipart.Add(new StringContent(toFrame ? "true" : "false"), "to_frame");
+        foreach (var (key, value) in formFields)
+            multipart.Add(new StringContent(value), key);
 
-        var response = await http.PostAsync("generate", multipart);
+        var url = baseUrl.TrimEnd('/') + "/generate";
+        var response = await _http.PostAsync(url, multipart);
         var body = await response.Content.ReadAsStringAsync();
         return ((int)response.StatusCode, body);
     }
@@ -160,7 +189,40 @@ public class LaigOApiClient(IAPIRequestContext context, string baseUrl)
         return await r.BodyAsync();
     }
 
+    /// <summary>GET /jobs/{jobId}/preview — 3D-preview JSON payload.</summary>
+    public Task<IAPIResponse> GetJobPreviewRawAsync(string jobId) =>
+        context.GetAsync($"/jobs/{jobId}/preview");
+
+    /// <summary>
+    /// GET /artifacts/{jobId}/artifact.zip — the StaticFiles mount, a second
+    /// (unauthenticated) download path parallel to /jobs/{id}/download.
+    /// </summary>
+    public Task<IAPIResponse> GetStaticArtifactRawAsync(string jobId) =>
+        context.GetAsync($"/artifacts/{jobId}/artifact.zip");
+
+    // ── Generic fetch (arbitrary method + headers) ──────────────────────────
+    // For CORS preflight (OPTIONS), HEAD prechecks, and method-not-allowed
+    // (405) assertions that the typed GET/POST helpers can't express.
+
+    public Task<IAPIResponse> FetchRawAsync(
+        string path,
+        string method,
+        IDictionary<string, string>? headers = null) =>
+        context.FetchAsync(path, new APIRequestContextOptions
+        {
+            Method = method,
+            Headers = headers,
+        });
+
     // ── Checkout ──────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// POST an arbitrary JSON body to any path. For malformed-body validation
+    /// tests (missing/extra/wrong-typed fields) that the typed request records
+    /// can't express.
+    /// </summary>
+    public Task<IAPIResponse> PostJsonRawAsync(string path, object body) =>
+        context.PostAsync(path, new APIRequestContextOptions { DataObject = body });
 
     public Task<IAPIResponse> GetQuoteRawAsync(string jobId, QuoteRequest request) =>
         context.PostAsync($"/jobs/{jobId}/checkout/quote", new APIRequestContextOptions

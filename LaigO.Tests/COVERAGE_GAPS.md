@@ -13,6 +13,43 @@ Severity legend:
 
 ---
 
+## Changelog 2026-06-03 — antipattern audit + restructure + coverage build-out
+
+Re-verified every claim below against current `scripts/` and rebuilt the suite. Suite grew from ~24 tests to **73**. Folder layout reorganized into `Contract/` (fast, no job created), `Pipeline/` (slow, stateful), `Quarantine/` (KnownFailing). CI now runs `--filter "Category!=KnownFailing"` as the gating job plus a non-gating quarantine step.
+
+**P0s — both FIXED:**
+- 0.1 `CheckoutStatusResponse` model drift → `CheckoutModels.cs` renamed `stripe_payment_intent_id`→`payment_hold_id`, added `payment_authorized_cents`, `customer_message`, `manual_review_reason`. Verified by `Status_DeserializesEverySagaStatusValue` (8 cases, all green).
+- 0.2 dead `Traceback` assertion → field removed from `JobModels.cs`; assertion deleted.
+
+**Now CLOSED (new tests, verified compiling):**
+1.1 preview (`Preview_NonExistentJob_Returns404WithCode`, `Preview_CompletedJob_ReturnsJsonPayload`) ·
+1.2 confirm CI-safe branches (`Confirm_GateClosed_Returns503WithCode`, `Confirm_QuoteNotFound_Returns409`) ·
+1.3 static mount (`Artifacts_StaticMount_*`) ·
+2.1 generate value-range 422s + `mosaic_type=3d` happy path ·
+2.4 quote validators + free-shipping invariant + `expires_at` bounded + repeated-quote distinct id ·
+2.5 saga enum round-trip ·
+2.6 debug 422 validators + `id_type` variants ·
+2.7/2.8 order-list & optimize 404s + free-shipping ·
+3.2 CORS allow-list ·
+3.4 two-job concurrency (`Queue_TwoConcurrentJobs_SecondIsQueuedBehindFirst`) ·
+3.5 `/jobs/{id}` cache-control ·
+4.x HEAD + 405.
+
+**Antipatterns addressed:** vacuous conditional passes → `Assert.Ignore` (gate/BrickOwl-pending now report *skipped*, not *passed*); always-red canary → `[Explicit]`+`KnownFailing` quarantine, excluded from gate; per-call `HttpClient` → shared static; raw `JsonDocument` parsing → typed debug models; inline ZIP diagnostic → `Diagnostics/ArtifactDiagnostics`; magic values → `TestConstants`.
+
+### Atomicity + assertion-strengthening pass (later same day)
+Decision: **no shared completed-job fixture — tests stay atomic.** For live-API integration tests the best-practice default is per-test independence unless setup is prohibitively expensive; `blockWidth=2` jobs on the 32×32 image are fast on the paid always-on instance, so atomicity wins (no cascading failures, every test runnable in isolation). `SubmitAndAwaitCompletionAsync` gives each test its own job.
+- Split bundled behaviors for atomicity: JobStatus shape vs cache-control; quote pricing vs quote idempotency; order-list vs optimizer preview.
+- Strengthened assertions across every test: exact capacity constants (`MaxWorkers==1`, `MaxQueueSize==20`); queue uniqueness; timestamp ordering `created≤started≤finished`; `progress==100` exact; download `Content-Type`/`Content-Disposition`; preview JSON-object shape; CORS credentials header; 405 `Allow` header; HEAD empty body; arithmetic invariants (`total_cost == Σ seller subtotals`, `customer_total == grand_total + fee`); LEGO/BrickOwl batch partition consistency; `cheapest_price`/`most_stock` derivation; structured-error `error`/`code`/`mode` fields; saga round-trip of all optional fields + omitted-fields-as-null. 77 tests total.
+- Gotcha fixed: FluentAssertions `Equal(...)`/`ContainAll(...)` params overloads have no `because` arg — a trailing reason string becomes an expected element. Reasons moved to comments / `HaveCount`.
+
+**Still open / intentionally deferred:**
+- **A4 shared fixture** — declined in favor of atomicity (see decision above). Each pipeline test runs its own generate cycle.
+- §3.1 global-handler shape (no reliable trigger), §3.3 XFF (no audit-fetch endpoint), §6 out-of-scope (real confirm, 413/429, timeouts, disk failures), deterministic `failed` job. See §6.
+- memory issue #11 — `GenerationTimeoutMs=600000` still too long for `blockWidth=2`.
+
+---
+
 ## Changelog since 2026-05-24
 
 Re-audited against current `scripts/` and current `LaigO.Tests/`. The following gaps from the prior audit are **now closed** — do not re-report them:

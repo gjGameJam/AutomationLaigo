@@ -10,11 +10,17 @@ public record GenerateResponse(
 // Note: LAIGO `/jobs/{job_id}` does not echo `job_id` in the response body —
 // the field is in the URL path only. Use the JobId from GenerateResponse for
 // downstream URLs, not from any poll response.
+//
+// P0 fix (2026-06-03): the `traceback` field was REMOVED. `_store_row_to_response`
+// (Main.py:526-567) never emits a `traceback` key — only `error` (from
+// `error_message`). The old `Traceback` property always deserialized to null,
+// so `finished.Traceback.Should().BeNull()` passed unconditionally for every
+// status, including failed jobs. A failed job's detail lives in `error`; assert
+// on that instead.
 public record JobStatusResponse(
     [property: JsonPropertyName("status")] string Status,
     [property: JsonPropertyName("progress")] double Progress,
     [property: JsonPropertyName("error")] string? Error,
-    [property: JsonPropertyName("traceback")] string? Traceback,
     [property: JsonPropertyName("created_at")] double? CreatedAt,
     [property: JsonPropertyName("queued_at")] double? QueuedAt,
     [property: JsonPropertyName("started_at")] double? StartedAt,

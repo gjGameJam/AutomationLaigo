@@ -35,13 +35,33 @@ jobs:
       - name: Build
         run: dotnet build AutomationLaigo.sln --no-restore --configuration Release
 
-      - name: Run API tests
+      # Gating run — excludes the KnownFailing quarantine so a green result
+      # genuinely means green. The quarantined LEGO canary is a deliberate,
+      # tracked failure (backend GraphQL migration pending); keeping it out of
+      # the gate prevents alert fatigue from a permanently-red suite.
+      - name: Run API tests (gating)
         run: >
           dotnet test AutomationLaigo.sln
           --no-build
           --configuration Release
           --verbosity normal
+          --filter "Category!=KnownFailing"
           --logger "trx;LogFilePath=nightly-results.trx"
+          --results-directory ./TestResults
+
+      # Non-gating run — surfaces the quarantined canary so we notice the moment
+      # LEGO sourcing is restored. [Explicit] tests only run when explicitly
+      # selected, so we target the category directly. Never fails the build.
+      - name: Run quarantine (non-gating)
+        if: always()
+        continue-on-error: true
+        run: >
+          dotnet test AutomationLaigo.sln
+          --no-build
+          --configuration Release
+          --verbosity normal
+          --filter "Category=KnownFailing"
+          --logger "trx;LogFilePath=quarantine-results.trx"
           --results-directory ./TestResults
 
       - name: Upload test results
