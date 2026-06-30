@@ -19,7 +19,11 @@ the Pydantic shapes), `Diagnostics/` (failure-explainer helpers), `TestConstants
 (well-known ids/bounds), `Fixtures/LaigOTestBase.cs` (per-test context + helpers).
 
 Every test class carries two `[Category]` tags: the **tier** (`Contract`/`Pipeline`)
-and the **area** (`Health`, `Checkout`, `Debug`, …) so CI and local runs can filter.
+and the **area** so CI and local runs can filter. Areas in use: `Health`, `Generate`,
+`Queue`, `Cors`, `HttpSemantics` (live); `Checkout`, `CheckoutGate`, `Debug`,
+`KnownFailing` (shelved/quarantined — see §5). The live pay-what-you-want commerce
+path (`/pay`, `/donate`, `/webhooks/stripe`) is **untested** and should land under a
+new `Pay` area — see `COVERAGE_GAPS.md` §2.
 
 ---
 

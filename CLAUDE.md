@@ -5,7 +5,43 @@ for the LAIGO FastAPI backend. It runs against the deployed instance
 (`https://laigo.onrender.com`, override via `LAIGO_BASE_URL`) on a nightly GitHub
 Actions schedule. The backend source lives in a **separate** repo at
 `C:\Users\Grant Benson\OneDrive\Desktop\LAIGO` (`scripts/Main.py`,
-`scripts/checkout/*`) — read it to verify endpoint contracts before asserting them.
+`scripts/pay_router.py`, `scripts/checkout/*`) — read it to verify endpoint
+contracts before asserting them.
+
+## What LAIGO does
+
+A FastAPI service that turns an uploaded photo into a LEGO-mosaic build pack
+(instructions PDF + part list, zipped). Submit a job, poll it, download the
+artifact. The build pack is sold as a **pay-what-you-want digital product**
+(name your price, $0 allowed) via Stripe.
+
+## Live API surface (what's mounted — verify in `Main.py`/`pay_router.py` before asserting)
+
+| Area | Endpoints | Status |
+|---|---|---|
+| Mosaic pipeline | `GET /health`, `GET /`, `GET /queue`, `POST /generate`, `GET /jobs/{id}`, `GET /jobs/{id}/preview`, `GET /jobs/{id}/download`, `GET /artifacts/{id}/artifact.zip` (static mount) | **Live, well covered** |
+| Commerce (pay-what-you-want) | `POST /jobs/{id}/pay`, `POST /donate`, `POST /webhooks/stripe` (all in `pay_router.py`) | **Live, ⚠️ ZERO test coverage** — see `COVERAGE_GAPS.md` §2 |
+| Gate | `GET /checkout/gate` | Live; tests `[Ignore]`d by policy |
+
+### ⚠️ Shelved (NOT mounted — these endpoints 404)
+The **checkout saga** (`checkout/router.py`: `/checkout/quote|confirm|status` +
+marketplace ordering) and **checkout-debug** (`debug_router.py`: `/checkout-debug/*`
+LEGO/BrickOwl sourcing + `/optimize`) are shelved (`Main.py:63-66`). Their test
+fixtures are `[Ignore]`d, not deleted. The backend also runs **JSON storage, not
+Neon/Postgres**, and refuses to boot with `CHECKOUT_ENABLED=true` on JSON
+(`Main.py:274-289`) — so checkout is necessarily off. Full detail:
+`COVERAGE_GAPS.md` §What-changed.
+
+## Test repo structure (`LaigO.Tests/`)
+
+- `Contract/` — fast, read-only, **creates no job** (validation 422s, 404s, CORS, HTTP semantics, health, queue shape).
+- `Pipeline/` — slow, stateful, **runs a real generate cycle** (lifecycle, artifact ZIP, queue concurrency, static mount).
+- `Quarantine/` — `[Explicit]`+`[Category("KnownFailing")]`, excluded from the gating run.
+- `ApiClient/LaigOApiClient.cs` — typed endpoint methods (the only place HTTP plumbing lives).
+- `Models/` — records mirroring the Pydantic response shapes.
+- `Fixtures/` — `GlobalSetup` (shared Playwright) + `LaigOTestBase` (per-test context + `SubmitAndAwaitCompletionAsync`).
+- `Diagnostics/ArtifactDiagnostics.cs` — failure-explainer for artifact ZIPs.
+- `TestConstants.cs` — well-known ids/bounds; `TestConfig.cs` — base URL + timeouts.
 
 ## Test conventions — read `LaigO.Tests/TESTING_GUIDELINES.md` before writing tests
 
