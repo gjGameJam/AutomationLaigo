@@ -19,7 +19,7 @@ artifact. The build pack is sold as a **pay-what-you-want digital product**
 
 | Area | Endpoints | Status |
 |---|---|---|
-| Mosaic pipeline | `GET /health`, `GET /`, `GET /queue`, `POST /generate`, `GET /jobs/{id}`, `GET /jobs/{id}/preview`, `GET /jobs/{id}/download`, `GET /artifacts/{id}/artifact.zip` (static mount) | **Live, well covered** |
+| Mosaic pipeline | `GET /health`, `GET /`, `GET /queue`, `POST /generate` (⚠️ per-IP rate limit: 1 per 20s → 429 + `Retry-After`), `GET /jobs/{id}`, `GET /jobs/{id}/preview`, `GET /jobs/{id}/download`, `GET /artifacts/{id}/artifact.zip` (static mount) | **Live, well covered** |
 | Commerce (pay-what-you-want) | `POST /jobs/{id}/pay`, `POST /donate`, `POST /webhooks/stripe` (all in `pay_router.py`) | **Live, ⚠️ ZERO test coverage** — see `COVERAGE_GAPS.md` §2 |
 | Gate | `GET /checkout/gate` | Live; tests `[Ignore]`d by policy |
 
@@ -54,6 +54,9 @@ Top rules (full detail in that doc):
   **no shared completed-job fixture** (deliberate — keeps failures diagnosable).
 - **Honest signals:** unreachable preconditions use `Assert.Ignore`, never a vacuous
   pass; unconfigured deps (BrickOwl 502) → Ignore, not pass.
+- **Rate-limit pacing:** every `/generate` call that passes param validation goes
+  through the client's `GenerateRateLimitGate` (`GenerateAsync` is always gated;
+  raw methods take `gated: true`). Never `Task.Delay` in a test to space submissions.
 - **Strong assertions:** assert the invariants (arithmetic, ordering, partitions,
   structured-error `code`), not just the status code.
 - **⚠️ FluentAssertions `params` overloads have NO `because` argument**

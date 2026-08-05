@@ -25,6 +25,9 @@ public static class TestConstants
     public const int MinBlockWidth = 1;   // picToMosiac.MIN_BLOCK_WIDTH
     public const int MaxBlockWidth = 40;  // picToMosiac.MAX_BLOCK_WIDTH (env default)
 
+    /// <summary>Per-IP /generate cooldown in seconds (Main.py GENERATE_RATE_LIMIT_SECONDS).</summary>
+    public const int GenerateRateLimitSeconds = 20;
+
     /// <summary>LEGO.com seller id (lego_client.SELLER_ID).</summary>
     public const string LegoSellerId = "lego_official";
 

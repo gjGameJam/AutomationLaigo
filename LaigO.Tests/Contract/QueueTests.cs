@@ -20,21 +20,21 @@ public class QueueTests : LaigOTestBase
 
         queue.Should().NotBeNull();
 
-        // Capacity constants are fixed in Main.py (MAX_WORKERS=1, MAX_QUEUE_SIZE=20).
-        // Pinning the exact values catches an accidental config change.
+        // Capacity constants are fixed in the deployment env (MAX_WORKERS=2,
+        // MAX_QUEUE_SIZE=20). Pinning the exact values catches an accidental
+        // config change.
         queue.MaxWorkers.Should().Be(2, "the backend runs 2 workers");
         queue.MaxQueueSize.Should().Be(20, "MAX_QUEUE_SIZE is 20");
 
-        queue.QueuedJobIds.Should().NotBeNull();
-        queue.QueuedJobIds.Should().OnlyHaveUniqueItems("the same job must not appear twice in the queue");
+        // queued_job_ids was deliberately removed from /queue (job ids are
+        // capability tokens; listing them leaked other customers' artifacts) —
+        // only aggregate counts are exposed now. See Models/JobModels.cs.
         queue.Counts.Should().NotBeNull();
         queue.Counts.Queued.Should().BeGreaterThanOrEqualTo(0);
         queue.Counts.Running.Should().BeGreaterThanOrEqualTo(0);
         queue.ActiveJobs.Should().BeGreaterThanOrEqualTo(0);
 
         // Invariants — these must hold or the queue state is internally inconsistent.
-        queue.QueuedJobIds.Count.Should().Be(queue.Counts.Queued,
-            "queued_job_ids list length must match counts.queued");
         queue.QueuedJobs.Should().Be(queue.Counts.Queued,
             "top-level queued_jobs must match counts.queued");
         queue.Counts.Queued.Should().BeLessThanOrEqualTo(queue.MaxQueueSize,

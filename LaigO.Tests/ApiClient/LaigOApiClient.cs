@@ -79,14 +79,33 @@ public class LaigOApiClient(IAPIRequestContext context, string baseUrl)
     /// Use this to assert on error responses (400, 422, etc.).
     /// Accepts string-typed values so callers can submit deliberately invalid
     /// inputs (e.g. mosaic_block_width="0", mosaic_type="cube") to exercise the
-    /// backend's validation 422s.
+    /// backend's validation 422s. Pass <paramref name="gated"/> when the request
+    /// passes param validation and therefore reaches the per-IP rate limiter.
     /// </summary>
-    public Task<(int Status, string Body)> GenerateRawAsync(
+    public async Task<(int Status, string Body)> GenerateRawAsync(
         string imagePath,
         int blockWidth = 2,
         string mosaicType = "2d",
         double bgPct = 100,
-        bool toFrame = false)
+        bool toFrame = false,
+        bool gated = false)
+    {
+        var r = await GenerateDetailedRawAsync(imagePath, blockWidth, mosaicType, bgPct, toFrame, gated);
+        return (r.Status, r.Body);
+    }
+
+    /// <summary>
+    /// Same as <see cref="GenerateRawAsync"/> but surfaces the Retry-After
+    /// header — the discriminator between the per-IP rate-limit 429 (has it)
+    /// and the queue-full 429 (doesn't).
+    /// </summary>
+    public Task<GenerateRawResult> GenerateDetailedRawAsync(
+        string imagePath,
+        int blockWidth = 2,
+        string mosaicType = "2d",
+        double bgPct = 100,
+        bool toFrame = false,
+        bool gated = false)
     {
         var fields = new Dictionary<string, string>
         {
@@ -95,37 +114,54 @@ public class LaigOApiClient(IAPIRequestContext context, string baseUrl)
             ["background_color_percent"] = bgPct.ToString("F2"),
             ["to_frame"] = toFrame ? "true" : "false",
         };
-        return GenerateMultipartRawAsync(imagePath, fields);
+        return GenerateMultipartCoreAsync(imagePath, fields, gated);
     }
 
     /// <summary>
     /// Low-level multipart POST to /generate with caller-supplied form fields.
     /// Omitting a key lets tests exercise the missing-required-field 422 without
     /// duplicating the HttpClient/multipart plumbing in the test body. Pass
-    /// <paramref name="fieldOverrides"/> with raw string values to send invalid
+    /// <paramref name="formFields"/> with raw string values to send invalid
     /// shapes.
     /// </summary>
     public async Task<(int Status, string Body)> GenerateMultipartRawAsync(
         string imagePath,
-        IDictionary<string, string> formFields)
+        IDictionary<string, string> formFields,
+        bool gated = false)
     {
-        using var multipart = new MultipartFormDataContent();
-
-        var imageBytes = await File.ReadAllBytesAsync(imagePath);
-        var fileContent = new ByteArrayContent(imageBytes);
-        fileContent.Headers.ContentType = MediaTypeHeaderValue.Parse("image/jpeg");
-        multipart.Add(fileContent, "file", Path.GetFileName(imagePath));
-        foreach (var (key, value) in formFields)
-            multipart.Add(new StringContent(value), key);
-
-        var url = baseUrl.TrimEnd('/') + "/generate";
-        var response = await _http.PostAsync(url, multipart);
-        var body = await response.Content.ReadAsStringAsync();
-        return ((int)response.StatusCode, body);
+        var r = await GenerateMultipartCoreAsync(imagePath, formFields, gated);
+        return (r.Status, r.Body);
     }
 
+    // The single /generate send path — every overload above funnels here so the
+    // rate-limit gate sees all submissions. The multipart body is built INSIDE
+    // the lambda: the gate may invoke it again on a 429 retry, and HttpClient
+    // disposes the request content after PostAsync.
+    private Task<GenerateRawResult> GenerateMultipartCoreAsync(
+        string imagePath,
+        IDictionary<string, string> formFields,
+        bool gated) =>
+        GenerateRateLimitGate.SendAsync(waitForSlot: gated, async () =>
+        {
+            using var multipart = new MultipartFormDataContent();
+
+            var imageBytes = await File.ReadAllBytesAsync(imagePath);
+            var fileContent = new ByteArrayContent(imageBytes);
+            fileContent.Headers.ContentType = MediaTypeHeaderValue.Parse("image/jpeg");
+            multipart.Add(fileContent, "file", Path.GetFileName(imagePath));
+            foreach (var (key, value) in formFields)
+                multipart.Add(new StringContent(value), key);
+
+            var url = baseUrl.TrimEnd('/') + "/generate";
+            var response = await _http.PostAsync(url, multipart);
+            var body = await response.Content.ReadAsStringAsync();
+            var retryAfter = (int?)response.Headers.RetryAfter?.Delta?.TotalSeconds;
+            return new GenerateRawResult((int)response.StatusCode, body, retryAfter);
+        });
+
     /// <summary>
-    /// Submits a generate job and returns the parsed response.
+    /// Submits a generate job and returns the parsed response. Always gated:
+    /// waits out the per-IP /generate cooldown and retries on a rate-limit 429.
     /// Throws if the server returns a non-200 status.
     /// </summary>
     public async Task<GenerateResponse> GenerateAsync(
@@ -135,12 +171,14 @@ public class LaigOApiClient(IAPIRequestContext context, string baseUrl)
         double bgPct = 100,
         bool toFrame = false)
     {
-        var (status, body) = await GenerateRawAsync(imagePath, blockWidth, mosaicType, bgPct, toFrame);
-        if (status != 200)
-            throw new InvalidOperationException(
-                $"POST /generate returned {status}: {body}");
-        return JsonSerializer.Deserialize<GenerateResponse>(body, _json)
-            ?? throw new InvalidOperationException($"Failed to deserialize GenerateResponse: {body}");
+        var r = await GenerateDetailedRawAsync(imagePath, blockWidth, mosaicType, bgPct, toFrame, gated: true);
+        if (r.Status != 200)
+            throw new InvalidOperationException(r.IsRateLimited
+                ? "POST /generate still rate-limited after retries — an external caller " +
+                  $"(dev browser / aborted run) holds this IP's cooldown: {r.Body}"
+                : $"POST /generate returned {r.Status}: {r.Body}");
+        return JsonSerializer.Deserialize<GenerateResponse>(r.Body, _json)
+            ?? throw new InvalidOperationException($"Failed to deserialize GenerateResponse: {r.Body}");
     }
 
     // ── Job status ────────────────────────────────────────────────────────────

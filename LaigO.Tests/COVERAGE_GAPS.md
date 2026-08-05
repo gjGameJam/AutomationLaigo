@@ -60,7 +60,7 @@ git history; do not re-open those items. The real open gap is the pay path (§2)
 | GET | `/health` | ✅ | `HealthTests`, `HttpSemanticsTests` | **Good** — 200/shape + HEAD/PUT 405 |
 | GET | `/` | ✅ | `HealthTests` | **Good** |
 | GET | `/queue` | ✅ | `QueueTests`, `QueueConcurrencyTests` | **Good** — structure + FIFO ordering |
-| POST | `/generate` | ✅ | `GenerateValidationTests`, `GenerateLifecycleTests` | **Good** — value-range 422s, 400 image, 2d/3d/toFrame happy paths, artifact ZIP |
+| POST | `/generate` | ✅ | `GenerateValidationTests`, `GenerateLifecycleTests`, `GenerateRateLimitTests` | **Good** — value-range 422s, 400 image, 2d/3d/toFrame happy paths, artifact ZIP, per-IP rate-limit 429 + Retry-After |
 | GET | `/jobs/{id}` | ✅ | `JobLookupTests`, `GenerateLifecycleTests`, `QueueConcurrencyTests` | **Partial** — 404, complete shape, mid-flight shape, no-cache, queued-position. Gaps in §3. |
 | GET | `/jobs/{id}/preview` | ✅ | `JobLookupTests`, `GenerateLifecycleTests` | **Good** — 404 `PREVIEW_NOT_AVAILABLE` + 200 JSON object |
 | GET | `/jobs/{id}/download` | ✅ | `JobLookupTests`, `GenerateLifecycleTests` | **Good** — 404 + 200 ZIP + lifecycle 404→200 |
@@ -176,10 +176,13 @@ Field-name reminders: the response uses **`finished_at`** (not `completed_at`),
 `created_at == queued_at`, and `progress` is forced to `100` on complete / `0` on failed.
 
 ### 3.2 `POST /generate` — uncovered defensive branches
-Value-range 422s, the 400 invalid-image branch, and 2d/3d/toFrame happy paths are
-covered. Untested (all impractical in CI — see §6): 503 shutting-down, 429 queue-full
-(needs ≥21 in-flight, `MAX_QUEUE_SIZE=20`), 413 too-large (`MAX_UPLOAD_SIZE_MB=250`),
-500 disk failure.
+Value-range 422s, the 400 invalid-image branch, 2d/3d/toFrame happy paths, and the
+**per-IP rate-limit 429** (one submission per 20s; carries `Retry-After` — covered
+by `GenerateRateLimitTests`) are covered. Note `/generate` has **two distinct
+429s**: the per-IP rate limit (with `Retry-After`) and queue-full (without).
+Untested (all impractical in CI — see §6): 503 shutting-down, **queue-full** 429
+(no `Retry-After`; needs ≥21 in-flight, `MAX_QUEUE_SIZE=20`), 413 too-large
+(`MAX_UPLOAD_SIZE_MB=250`), 500 disk failure.
 
 ### 3.3 `GET /jobs/{id}/preview` — 500 branch
 200 + 404 (`PREVIEW_NOT_AVAILABLE`) covered. The 500 `PREVIEW_CORRUPTED` branch
@@ -246,7 +249,8 @@ Excluded by design; keep a manual-runbook trigger for each:
 - **`/donate` 200 `client_secret`** — mints a real Stripe PaymentIntent; provider-dependent.
 - **`/webhooks/stripe` 200 recording path** — requires a validly-signed event (needs
   `STRIPE_WEBHOOK_SECRET`); use Stripe's CLI/event-replay in a sandbox.
-- **`/generate` 413 / 429 / 503 / 500** — load-test / shutdown / disk-failure territory.
+- **`/generate` 413 / queue-full 429 / 503 / 500** — load-test / shutdown /
+  disk-failure territory. (The per-IP rate-limit 429 is covered — `GenerateRateLimitTests`.)
 - **`JOB_TIMEOUT_SECONDS` (1800 s) expiry, `JOB_TTL_SECONDS` (600 s) eviction** —
   wall-clock waits unfriendly to CI.
 - **The shelved checkout saga's terminal money states** — moot while unmounted (§4).

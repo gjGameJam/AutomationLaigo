@@ -74,7 +74,7 @@ Weak tests (status code only) catch little. Add the structural contracts:
 - **Ordering:** `created_at ≤ started_at ≤ finished_at`, `queue_position ≤ queue_length`.
 - **Partitions/derivations:** available/unavailable is a clean partition; `cheapest_price`
   is the min of listings.
-- **Exact values where fixed:** `MaxWorkers == 1`, `progress == 100` on complete.
+- **Exact values where fixed:** `MaxWorkers == 2`, `progress == 100` on complete.
 - **Structured errors:** assert `detail.code` (frontends match on it) *and* that the
   customer-facing `error` doesn't leak the operator-facing code.
 
@@ -88,6 +88,19 @@ Add a method to `LaigOApiClient` rather than building `HttpClient`/multipart inl
 Use the shared static `HttpClient` (never `new HttpClient()` per call — socket
 exhaustion). Prefer typed `Models/` records over hand-parsing `JsonDocument`; raw
 parsing is only for genuinely dynamic envelopes (e.g. the BrickOwl raw debug shape).
+
+### Respect the /generate per-IP rate limit — use the gated client paths
+The backend allows **one /generate per IP per 20s** (429 + `Retry-After` on
+violation; the cooldown is recorded for every request that *passes* the limiter,
+even ones that later fail 400/413/queue-full). All submissions that pass param
+validation MUST go through the gated client paths: `GenerateAsync` is always
+gated; the raw methods take `gated: true`. Never `Task.Delay` in a test to space
+submissions — `GenerateRateLimitGate` owns the timing (single mutex, monotonic
+clock, bounded Retry-After retry against external callers on the same IP).
+Requests rejected *before* the limiter (param-value 422s, missing-field 422s)
+stay ungated so validation tests stay fast. To deliberately *observe* the 429
+contract, call `GenerateDetailedRawAsync(..., gated: false)` — see
+`Pipeline/GenerateRateLimitTests.cs`.
 
 ---
 
@@ -179,5 +192,6 @@ The suite runs against the deployed instance and real LEGO.com / BrickOwl.
 - [ ] Asserts the real contract, not just the status code (invariants from §3).
 - [ ] No `because` string passed to a `params` overload (§4).
 - [ ] HTTP plumbing lives in `LaigOApiClient`; response parsed via a typed model.
+- [ ] Any new /generate call that passes param validation uses a gated client path (§3).
 - [ ] Correct folder + both `[Category]` tags (tier + area).
 - [ ] `dotnet build` clean (0 warnings); offline tests still green.

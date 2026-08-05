@@ -37,9 +37,13 @@ public record JobSettings(
     [property: JsonPropertyName("to_frame")] bool ToFrame
 );
 
+// `queued_job_ids` was REMOVED from /queue (backend security hardening): a
+// job_id is the de-facto capability token for /download, /artifacts, /preview
+// and /pay on an unauthenticated API, so listing live ids let anyone harvest
+// other customers' artifacts. Only aggregate counts are exposed now — per-job
+// state comes from /jobs/{id}.
 public record QueueResponse(
     [property: JsonPropertyName("queued_jobs")] int QueuedJobs,
-    [property: JsonPropertyName("queued_job_ids")] List<string> QueuedJobIds,
     [property: JsonPropertyName("max_queue_size")] int MaxQueueSize,
     [property: JsonPropertyName("active_jobs")] int ActiveJobs,
     [property: JsonPropertyName("max_workers")] int MaxWorkers,

@@ -5,11 +5,14 @@ using LaigO.Tests.Fixtures;
 namespace LaigO.Tests.Contract;
 
 /// <summary>
-/// POST /generate input validation. Every case here is rejected by the backend
-/// BEFORE the upload is read and BEFORE any job is created (B54 ordering:
-/// value validation → shutdown → queue-full → size → image-verify), so these
-/// are fast and leave no job behind. The happy paths live in
-/// Pipeline.GenerateLifecycleTests.
+/// POST /generate input validation. Handler ordering: param-value 422s →
+/// 503 shutdown → per-IP rate limit (429 + Retry-After) → queue-full 429
+/// (no Retry-After) → 413 size → 400 image-verify. Every case here except
+/// Generate_InvalidImageData_Returns400 is rejected BEFORE the rate limiter
+/// and before any job is created, so those run ungated and fast.
+/// InvalidImageData passes value validation, reaches the limiter (its request
+/// burns the per-IP cooldown even though it 400s), and therefore submits with
+/// gated: true. The happy paths live in Pipeline.GenerateLifecycleTests.
 /// </summary>
 [TestFixture]
 [Category("Contract")]
@@ -82,7 +85,10 @@ public class GenerateValidationTests : LaigOTestBase
 
         try
         {
-            var (status, body) = await Client.GenerateRawAsync(tempFile, blockWidth: 2);
+            // Valid params → this request passes value validation and reaches the
+            // per-IP rate limiter (burning the cooldown before its 400), so it
+            // must wait for a slot and get 429-retry resilience.
+            var (status, body) = await Client.GenerateRawAsync(tempFile, blockWidth: 2, gated: true);
 
             status.Should().Be(400, "invalid image data must be rejected by PIL verification");
             using var doc = JsonDocument.Parse(body);
