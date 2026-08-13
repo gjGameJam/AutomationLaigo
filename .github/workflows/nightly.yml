@@ -24,6 +24,17 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v5
 
+      # Diagnostic breadcrumb only — never prints the secret value. When the
+      # secret/input is absent, GH still exports LAIGO_BASE_URL as "", and the
+      # test config falls back to the appsettings.test.json default.
+      - name: Report base URL source
+        run: |
+          if [ -n "$LAIGO_BASE_URL" ]; then
+            echo "LAIGO_BASE_URL override is set (from input or secret)"
+          else
+            echo "LAIGO_BASE_URL is empty — falling back to appsettings.test.json default"
+          fi
+
       - name: Setup .NET 8
         uses: actions/setup-dotnet@v4
         with:
