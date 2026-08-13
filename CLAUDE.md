@@ -69,4 +69,11 @@ Top rules (full detail in that doc):
 - Offline tests (model round-trips) run without network; full suite hits live prod
   and spends generate cycles — don't run it casually.
 - CI: `.github/workflows/nightly.yml` gates on `Category!=KnownFailing`.
+- Base URL resolution (`TestConfig.BaseUrl`): `LAIGO_BASE_URL` env var when non-blank,
+  else `appsettings.test.json`. Blank/whitespace values are ignored — GitHub Actions
+  exports an unset secret as `""`, which silently broke every nightly test until fixed
+  2026-08-12. The resolved value is validated (absolute http/https) once in
+  `GlobalSetup`, so a bad config fails the assembly with one clear error instead of
+  per-test "Invalid URL" noise. The `LAIGO_BASE_URL` repo secret is **optional**; a
+  workflow step logs which source won (never the secret value).
 - Coverage status / open gaps: `LaigO.Tests/COVERAGE_GAPS.md`.
